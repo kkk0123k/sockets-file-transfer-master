@@ -8,9 +8,11 @@ import java.lang.*; // Imports all classes in the java.lang package
 import java.awt.*; // Imports all classes in the java.awt package
 import java.awt.event.*; // Imports all classes in the java.awt.event package
 import javax.swing.*; // Imports all classes in the javax.swing package
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays; // Imports the Arrays class from the java.util package
 import java.util.HashSet; // Imports the HashSet class from the java.util package
 import java.util.Objects;
+import java.util.Scanner;
 
 class Client extends JFrame implements ActionListener, MouseListener { // Declares a class named Client that extends JFrame and implements ActionListener and MouseListener
 
@@ -30,8 +32,12 @@ class Client extends JFrame implements ActionListener, MouseListener { // Declar
     private HashSet<String> clientFileNames; // Declares a private HashSet object named clientFileNames
 
     private BufferedReader in; // Declares a private BufferedReader object named in
+    Scanner sc = new Scanner(System.in);
 
     private final JFileChooser fileChooser = new JFileChooser(); // Declares a final JFileChooser object named fileChooser
+    private static DESAlgorithm des;
+    private static String textFromFile;
+    String key, plain_text, cipher_text;
 
     public Client() { // Constructor for the Client class
         super("Simple Torrent"); // Calls the constructor of the superclass JFrame with the title "Simple Torrent"
@@ -337,24 +343,183 @@ class Client extends JFrame implements ActionListener, MouseListener { // Declar
             int returnValue = fileChooser.showOpenDialog(null);
             if (returnValue == JFileChooser.APPROVE_OPTION) {
                 File fileToUpload = fileChooser.getSelectedFile();
-                try {
-                    sendFile(fileToUpload);
-                } catch (IOException ex) {
-                    ex.printStackTrace();
-                }
+
+                System.out.println("File selected: " + fileToUpload.getName());  // Print the name of the selected file
+                
+                // Start a new thread to send the file
+                new Thread(() -> {
+                    try {
+                        System.out.println("Starting file transfer...");  // Print a message before starting the file transfer
+                        sendFile(fileToUpload);
+                    } catch (IOException ex) {
+                        ex.printStackTrace();
+                    }
+                }).start();
             }
         }
-        
+
     }
 
+    // Client
     void sendFile(File file) throws IOException {
-        byte[] buffer = new byte[4096];
-        InputStream in = new FileInputStream(file);
-        int count;
-        while ((count = in.read(buffer)) > 0) {
-            output.write(buffer, 0, count);
+        // Start a new thread
+        new Thread(() -> {
+            try {
+                // First, send a message to the server indicating that you want to send a file
+                pw.println("FILE_TRANSFER_REQUEST" + file.getName());
+                System.out.println("Sending file transfer request...");
+                // Then, wait for the server's response
+                System.out.println("Waiting for server response...");
+                String serverResponse = in.readLine();
+                System.out.println("Received response from server: " + serverResponse);
+
+                if (serverResponse.equals("ACCEPTED")) {
+                    // Wait for the server to be ready to receive the file
+                    serverResponse = in.readLine();
+                    if (!"READY_TO_RECEIVE".equals(serverResponse)) {
+                        System.out.println("Server is not ready to receive the file");
+                        return;
+                    }
+
+                    // Display a dialog to enter the encryption key
+                    String key = JOptionPane.showInputDialog("Enter the encryption key:");
+
+                    // Encrypt the file
+                    if (readDataFromAFile(String.valueOf(file))) {
+                        plain_text = textFromFile;
+                    }
+                    des_encrypt(plain_text, key);
+
+                    // Send the encrypted file
+                    File encryptedFile = new File("output.txt");
+                    BufferedReader reader = new BufferedReader(new FileReader(encryptedFile));
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        pw.println(line);
+                        System.out.println("Sent line: " + line); // Prints the sent line to the console
+                    }
+                    pw.println("END_OF_FILE");  // Send "END_OF_FILE" without a newline character at the end
+                    System.out.println("Sent END_OF_FILE"); // Prints a message to the console
+                    reader.close();
+
+                    // Wait for a response from the server after sending the "END_OF_FILE" message
+                    serverResponse = in.readLine();
+                    System.out.println(serverResponse);
+                    if ("FILE_RECEIVED".equals(serverResponse)) {
+                        System.out.println("File transfer successful");
+                    } else {
+                        System.out.println("File transfer failed");
+                    }
+
+                    // After sending the file, you can inform the user that the file transfer was successful
+                    SwingUtilities.invokeLater(() -> {
+                        JOptionPane.showMessageDialog(null, "The server has accepted the file transfer.", "File Transfer", JOptionPane.INFORMATION_MESSAGE);
+                    });
+                } else if (serverResponse.equals("REJECTED")) {
+                    // If the server rejected the file transfer, inform the user
+                    SwingUtilities.invokeLater(() -> {
+                        JOptionPane.showMessageDialog(null, "The server has denied the file transfer.", "File Transfer", JOptionPane.WARNING_MESSAGE);
+                    });
+                }
+            } catch (Exception e) {
+                System.out.println("Exception in sendFile: " + e);
+                e.printStackTrace();
+            }
+        }).start();
+    }
+
+
+    //this method do required padding for des algorithm
+    public static String doPadding(String input_text) {
+        if (input_text.length() % 8 != 0) {
+
+            int paddingLength = 8 - input_text.length() % 8;
+            for (int i = 0; i < paddingLength; i++) {
+                input_text = input_text.concat(" ");
+            }
+        } else {
+            return input_text;
         }
-        output.flush();
+        return input_text;
+    }
+
+    //this method perform Electronic Code Book mode in DES Implementation
+    public static String[] doECB(String plain_text) {
+        int start = 0, end = 8;
+        int noOfBlock = plain_text.length() / 8;
+        String temp;
+        String[] text_array = new String[noOfBlock];
+
+        for (int i = 0; i < noOfBlock; i++) {
+            temp = plain_text.substring(start, end);
+            text_array[i] = temp;
+            start = end;
+            end = end + 8;
+        }
+        return text_array;
+    }
+
+    //this method encrypt data using des algorithm
+    public static void des_encrypt(String plain_text, String key) {
+        des = new DESAlgorithm(key);
+
+        String[] plain_text_array = doECB(doPadding(plain_text));
+        String cipher_block;
+        StringBuffer sb = new StringBuffer();
+
+        for (String s : plain_text_array) {
+            cipher_block = des.encrypt(s);
+            sb.append(cipher_block);
+        }
+
+        String cipher_text = new String(sb);
+        writeDataInAFile(cipher_text, "output.txt");
+        //System.out.println("\nCipher text: " + cipher_text);
+        System.out.println("This cipher text is written in output.txt file");
+    }
+
+    //this method write data into output file
+    public static void writeDataInAFile(String text, String fileName) {
+
+        byte[] buffer = text.getBytes(StandardCharsets.UTF_8);
+
+        try {
+            FileOutputStream fos = new FileOutputStream(fileName);
+            fos.write(buffer);
+            fos.close();
+        } catch (IOException ex) {
+            System.out.println("File not found");
+        }
+    }
+
+    public static boolean readDataFromAFile(String fileName) {
+
+        StringBuffer bf = new StringBuffer();
+        try {
+            File file = new File(fileName);
+            int fileLength = (int)file.length();
+            if(fileLength == 0){
+                System.out.println("no file or text is found in " + fileName);
+                return false;
+            }
+
+            byte[] buffer = new byte[fileLength];
+            FileInputStream fis = new FileInputStream(fileName);
+
+            int nRead;
+            while((nRead = fis.read(buffer)) != -1) {
+                bf.append(new String(buffer, StandardCharsets.UTF_8));
+            }
+
+            fis.close();
+
+        } catch (IOException ex) {
+            System.out.println(fileName + " file is not found");
+            return false;
+        }
+
+        textFromFile = new String(bf);
+        return true;
     }
 
     public static void main(String[] args) {
